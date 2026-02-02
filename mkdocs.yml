@@ -1,7 +1,7 @@
 site_name: sing-box
 site_author: nekohasekai
-repo_url: https://github.com/sjnhnp/sing-box
-repo_name: sjnhnp/sing-box
+repo_url: https://github.com/TheYusa/sing-box
+repo_name: TheYusa/sing-box
 copyright: Copyright &copy; 2022 nekohasekai
 site_description: The universal proxy platform.
 remote_branch: docs

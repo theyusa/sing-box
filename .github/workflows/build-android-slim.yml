@@ -16,6 +16,11 @@ on:
           - beta
           - stable
           - all
+      upstream_branch:
+        description: "Upstream branch to use (leave empty to use tag from version/mode)"
+        required: false
+        type: string
+        default: "dev"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -113,7 +118,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: SagerNet/sing-box
-          ref: ${{ matrix.config.tag }}
+          # Use branch if provided, otherwise use tag
+          ref: ${{ inputs.upstream_branch != '' && inputs.upstream_branch || matrix.config.tag }}
           fetch-depth: 0
           submodules: 'recursive'
           path: sing-box

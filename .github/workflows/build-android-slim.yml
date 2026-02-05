@@ -75,8 +75,8 @@ jobs:
              echo "Mode: Manual ($VER)"
           else
              # Fetch from Upstream
-             echo "Fetching releases from SagerNet/sing-box..."
-             RELEASES_JSON=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases")
+             echo "Fetching releases from TheYusa/sing-box..."
+             RELEASES_JSON=$(curl -s "https://api.github.com/repos/TheYusa/sing-box/releases")
              
              LATEST_BETA=$(echo "$RELEASES_JSON" | jq -r '[.[] | select(.prerelease == true)] | .[0] | .tag_name')
              LATEST_STABLE=$(echo "$RELEASES_JSON" | jq -r '[.[] | select(.prerelease == false)] | .[0] | .tag_name')
@@ -125,7 +125,7 @@ jobs:
       - name: Checkout upstream
         uses: actions/checkout@v4
         with:
-          repository: SagerNet/sing-box
+          repository: TheYusa/sing-box
           # Use branch if provided, otherwise use tag
           ref: ${{ inputs.upstream_branch != '' && inputs.upstream_branch || matrix.config.tag }}
           fetch-depth: 0
@@ -313,4 +313,4 @@ jobs:
           files: release_files/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
+

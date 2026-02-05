@@ -129,7 +129,7 @@ jobs:
           # Use branch if provided, otherwise use tag
           ref: ${{ inputs.upstream_branch != '' && inputs.upstream_branch || matrix.config.tag }}
           fetch-depth: 0
-          submodules: 'recursive'
+          submodules: 'clients/android'
           path: sing-box
 
       - name: Apply slim modifications

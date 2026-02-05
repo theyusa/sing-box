@@ -20,7 +20,7 @@ on:
         description: "Upstream branch to use (leave empty to use tag from version/mode)"
         required: false
         type: string
-        default: "dev"
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

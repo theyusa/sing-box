@@ -21,6 +21,14 @@ on:
         required: false
         type: string
         default: ""
+      android_client_branch:
+        description: "Android client branch (dev or test)"
+        required: false
+        type: choice
+        default: "dev"
+        options:
+          - dev
+          - test
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -167,7 +175,7 @@ jobs:
         working-directory: sing-box
         run: |-
           rm -rf clients/android
-          git clone -b dev https://github.com/TheYusa/sing-box-for-android.git clients/android
+          git clone -b ${{ inputs.android_client_branch }} https://github.com/TheYusa/sing-box-for-android.git clients/android
 
       - name: Gradle cache
         uses: actions/cache@v4

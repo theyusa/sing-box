@@ -69,25 +69,33 @@ jobs:
             local version=$1
             local is_prerelease=$2
             
+            echo "DEBUG: increment_version called with: version=$version, is_prerelease=$is_prerelease" >&2
+            
             if [ "$is_prerelease" = true ]; then
-              # Beta/RC versiyonları: 1.13.0-beta.4 -> 1.13.0-beta.5
+              # Beta/RC versiyonları için son sayıyı artır
+              # Örnek: 1.13.0-rc.2 -> 1.13.0-rc.3
               if echo "$version" | grep -qE '(alpha|beta|rc)\.[0-9]+$'; then
-                local base=$(echo "$version" | sed -E 's/(alpha|beta|rc)\.[0-9]+$//')
-                local type=$(echo "$version" | grep -oE '(alpha|beta|rc)')
-                local num=$(echo "$version" | grep -oE '[0-9]+$')
-                local new_num=$((num + 1))
-                echo "${base}${type}.${new_num}"
+                # Son sayıyı bul ve artır
+                local base=$(echo "$version" | sed -E 's/\.[0-9]+$//')
+                local last_num=$(echo "$version" | grep -oE '[0-9]+$')
+                local new_num=$((last_num + 1))
+                echo "${base}.${new_num}"
               else
                 # Eğer prerelease ama numarası yoksa .1 ekle
                 echo "${version}.1"
               fi
             else
               # Stable versiyonlar: 1.13.0 -> 1.13.1
-              local major=$(echo "$version" | cut -d. -f1)
-              local minor=$(echo "$version" | cut -d. -f2)
-              local patch=$(echo "$version" | cut -d. -f3 | cut -d- -f1)
-              local new_patch=$((patch + 1))
-              echo "${major}.${minor}.${new_patch}"
+              # Son rakamı artır
+              if echo "$version" | grep -qE '\.[0-9]+$'; then
+                local base=$(echo "$version" | sed -E 's/\.[0-9]+$//')
+                local last_num=$(echo "$version" | grep -oE '[0-9]+$')
+                local new_num=$((last_num + 1))
+                echo "${base}.${new_num}"
+              else
+                # Rakam yoksa .1 ekle
+                echo "${version}.1"
+              fi
             fi
           }
 
@@ -111,18 +119,32 @@ jobs:
              
              if [[ "$MODE" == "beta" || "$MODE" == "all" ]]; then
                 if [ -n "$LATEST_BETA" ] && [ "$LATEST_BETA" != "null" ]; then
-                  # Upstream versiyondan 'v' ve '-slim' temizle
-                  UPSTREAM_VER=$(echo "$LATEST_BETA" | sed 's/^v//' | sed 's/-slim$//')
+                  # Upstream versiyondan 'v' ve BÜTÜN '-slim' sufixlerini temizle
+                  UPSTREAM_VER=$(echo "$LATEST_BETA" | sed 's/^v//' | sed 's/-slim//g')
+                  
+                  echo "DEBUG: Upstream beta version (cleaned): $UPSTREAM_VER" >&2
                   
                   # Son slim release'imizi kontrol et
                   OUR_RELEASES=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases")
-                  LAST_SLIM_BETA=$(echo "$OUR_RELEASES" | jq -r '[.[] | select(.prerelease == true and (.tag_name | contains("slim")))] | .[0] | .tag_name')
+                  LAST_SLIM_BETA=$(echo "$OUR_RELEASES" | jq -r '[.[] | select(.prerelease == true and (.tag_name | contains("-slim")))] | .[0] | .tag_name')
+                  
+                  echo "DEBUG: Last slim beta release: $LAST_SLIM_BETA" >&2
                   
                   if [ -n "$LAST_SLIM_BETA" ] && [ "$LAST_SLIM_BETA" != "null" ]; then
+                    # Son versiyonumuzu temizle ve arttır
                     LAST_VER=$(echo "$LAST_SLIM_BETA" | sed 's/^v//' | sed 's/-slim$//')
-                    # Son versiyonumuzu arttır
-                    VER=$(increment_version "$LAST_VER" true)
-                    echo "Auto-increment Beta: $LAST_VER -> $VER"
+                    echo "DEBUG: Last version (cleaned): $LAST_VER" >&2
+                    
+                    # Upstream versiyonla karşılaştır
+                    if [ "$LAST_VER" = "$UPSTREAM_VER" ]; then
+                      # Aynı upstream versiyondan bir önceki slim varsa, sadece son rakamı artır
+                      VER=$(increment_version "$LAST_VER" true)
+                      echo "Auto-increment Beta (same upstream): $LAST_VER -> $VER"
+                    else
+                      # Upstream değişmişse, yeni upstream versiyonunu kullan
+                      VER="$UPSTREAM_VER"
+                      echo "New upstream Beta version: $VER"
+                    fi
                   else
                     # Hiç slim release yoksa upstream'i kullan
                     VER="$UPSTREAM_VER"
@@ -135,18 +157,32 @@ jobs:
              
              if [[ "$MODE" == "stable" || "$MODE" == "all" ]]; then
                 if [ -n "$LATEST_STABLE" ] && [ "$LATEST_STABLE" != "null" ]; then
-                  # Upstream versiyondan 'v' ve '-slim' temizle
-                  UPSTREAM_VER=$(echo "$LATEST_STABLE" | sed 's/^v//' | sed 's/-slim$//')
+                  # Upstream versiyondan 'v' ve BÜTÜN '-slim' sufixlerini temizle
+                  UPSTREAM_VER=$(echo "$LATEST_STABLE" | sed 's/^v//' | sed 's/-slim//g')
+                  
+                  echo "DEBUG: Upstream stable version (cleaned): $UPSTREAM_VER" >&2
                   
                   # Son slim stable release'imizi kontrol et
                   OUR_RELEASES=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases")
-                  LAST_SLIM_STABLE=$(echo "$OUR_RELEASES" | jq -r '[.[] | select(.prerelease == false and (.tag_name | contains("slim")))] | .[0] | .tag_name')
+                  LAST_SLIM_STABLE=$(echo "$OUR_RELEASES" | jq -r '[.[] | select(.prerelease == false and (.tag_name | contains("-slim")))] | .[0] | .tag_name')
+                  
+                  echo "DEBUG: Last slim stable release: $LAST_SLIM_STABLE" >&2
                   
                   if [ -n "$LAST_SLIM_STABLE" ] && [ "$LAST_SLIM_STABLE" != "null" ]; then
+                    # Son versiyonumuzu temizle ve arttır
                     LAST_VER=$(echo "$LAST_SLIM_STABLE" | sed 's/^v//' | sed 's/-slim$//')
-                    # Son versiyonumuzu arttır
-                    VER=$(increment_version "$LAST_VER" false)
-                    echo "Auto-increment Stable: $LAST_VER -> $VER"
+                    echo "DEBUG: Last version (cleaned): $LAST_VER" >&2
+                    
+                    # Upstream versiyonla karşılaştır
+                    if [ "$LAST_VER" = "$UPSTREAM_VER" ]; then
+                      # Aynı upstream versiyondan bir önceki slim varsa, sadece son rakamı artır
+                      VER=$(increment_version "$LAST_VER" false)
+                      echo "Auto-increment Stable (same upstream): $LAST_VER -> $VER"
+                    else
+                      # Upstream değişmişse, yeni upstream versiyonunu kullan
+                      VER="$UPSTREAM_VER"
+                      echo "New upstream Stable version: $VER"
+                    fi
                   else
                     # Hiç slim release yoksa upstream'i kullan
                     VER="$UPSTREAM_VER"
@@ -200,68 +236,55 @@ jobs:
         uses: actions/setup-go@v5
         with: { go-version: ^1.25.5 }
 
-      - name: Setup Android NDK
+      - name: Setup NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
-        with: { ndk-version: r28, local-cache: true }
+        with: { ndk-version: r28, add-to-path: false }
 
-      - name: Setup OpenJDK
-        run: sudo apt update && sudo apt install -y openjdk-17-jdk-headless
-
-      - name: Set tag
-        working-directory: sing-box
-        run: git tag v${{ matrix.config.version }} -f || true
-
-      - name: Build library
+      - name: Build box
         working-directory: sing-box
         run: |-
-          make lib_install
-          export PATH="$PATH:$(go env GOPATH)/bin"
-          
-          VERSION="${{ matrix.config.version }}"
-          TAGS="${{ env.SLIM_TAGS_NAIVE }},with_conntrack"
-          LDFLAGS="-X github.com/sagernet/sing-box/constant.Version=${VERSION} -X internal/godebug.defaultGODEBUG=multipathtcp=0 -s -w -buildid= -checklinkname=0"
-          
-          gomobile bind -v -o libbox.aar -target android/arm64 -androidapi 23 \
-            -javapkg=io.nekohasekai -libname=box -trimpath -buildvcs=false \
-            -ldflags "${LDFLAGS}" -tags "${TAGS}" ./experimental/libbox
-        env:
-          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          export CGO_ENABLED=1
+          export GOOS=android
+          go build -v -trimpath -tags "$SLIM_TAGS" \
+            -ldflags "-X github.com/sagernet/sing-box/constant.Version=${{ matrix.config.version }} -s -w -buildid=" \
+            -o libbox.so ./cmd/libbox
+          ls -lh libbox.so
 
-      - name: Checkout Android Client
+      - name: Build box (Naive)
         working-directory: sing-box
         run: |-
-          rm -rf clients/android
-          git clone -b ${{ inputs.android_client_branch }} https://github.com/TheYusa/sing-box-for-android.git clients/android
+          export CGO_ENABLED=1
+          export GOOS=android
+          go build -v -trimpath -tags "$SLIM_TAGS_NAIVE" \
+            -ldflags "-X github.com/sagernet/sing-box/constant.Version=${{ matrix.config.version }} -s -w -buildid=" \
+            -o libbox-naive.so ./cmd/libbox
+          ls -lh libbox-naive.so
 
-      - name: Gradle cache
-        uses: actions/cache@v4
+      - name: Build libbox.aar
+        working-directory: sing-box
+        run: |-
+          mkdir -p clients/android/app/libs
+          go run ./cmd/internal/build_libbox -o libbox.aar -t "$SLIM_TAGS"
+          ls -lh libbox.aar
+
+      - name: Checkout Android client
+        uses: actions/checkout@v4
         with:
-          path: ~/.gradle
-          key: gradle-android-slim-${{ hashFiles('sing-box/clients/android/**/*.gradle*') }}
+          repository: ElegaPhantom/sing-box-for-android
+          ref: ${{ inputs.android_client_branch }}
+          path: sing-box/clients/android
 
-      - name: Update Version Properties
+      - name: Set version.properties
         working-directory: sing-box
         run: |
           VERSION="${{ matrix.config.version }}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH_FULL=$(echo "$VERSION" | cut -d. -f3)
-          PATCH=$(echo "$PATCH_FULL" | cut -d- -f1)
-          PRERELEASE_NUM=0
-          if echo "$VERSION" | grep -q "alpha\|beta"; then
-            PRERELEASE_NUM=$(echo "$VERSION" | grep -oE '[0-9]+$' || echo "0")
-          fi
-          VERSION_CODE=$((MAJOR * 10000000 + MINOR * 100000 + PATCH * 1000 + PRERELEASE_NUM))
           
-          # Eğer version.properties dosyası varsa güncelle, yoksa oluştur
-          if [ -f clients/android/version.properties ]; then
-            echo "Updating existing version.properties"
-            sed -i "s/VERSION_CODE=.*/VERSION_CODE=${VERSION_CODE}/" clients/android/version.properties
-            sed -i "s/VERSION_NAME=.*/VERSION_NAME=${VERSION}/" clients/android/version.properties
-          else
-            echo "Creating new version.properties"
+          # Version code hesapla (timestamp based)
+          VERSION_CODE=$(date +%Y%m%d%H)
+          
+          # Check if version.properties already exists
+          if [ ! -f clients/android/version.properties ]; then
             echo "VERSION_CODE=${VERSION_CODE}" > clients/android/version.properties
             echo "VERSION_NAME=${VERSION}" >> clients/android/version.properties
           fi
@@ -463,4 +486,4 @@ jobs:
           make_latest: ${{ matrix.config.prerelease == false }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+          

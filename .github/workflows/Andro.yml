@@ -65,6 +65,25 @@ jobs:
               '. + [{"version": $v, "tag": $t, "prerelease": $p}]')
           }
           
+          # Versiyon stringinden tüm -slim ve ekstra sayıları temizle
+          clean_version() {
+            local ver=$1
+            # 1. 'v' prefixi kaldır
+            ver=$(echo "$ver" | sed 's/^v//')
+            # 2. Tüm '-slim' kısımlarını kaldır
+            ver=$(echo "$ver" | sed 's/-slim//g')
+            # 3. Sadece geçerli version formatını tut (X.Y.Z veya X.Y.Z-rc.N formatı)
+            # Ekstra .1.1.1 gibi kısımları temizle
+            if echo "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-[a-z]+\.[0-9]+'; then
+              # Prerelease format: 1.13.0-rc.2
+              ver=$(echo "$ver" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+-[a-z]+\.[0-9]+')
+            elif echo "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+              # Stable format: 1.13.0
+              ver=$(echo "$ver" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+            fi
+            echo "$ver"
+          }
+          
           increment_version() {
             local version=$1
             local is_prerelease=$2
@@ -74,14 +93,13 @@ jobs:
             if [ "$is_prerelease" = true ]; then
               # Beta/RC versiyonları için son sayıyı artır
               # Örnek: 1.13.0-rc.2 -> 1.13.0-rc.3
-              if echo "$version" | grep -qE '(alpha|beta|rc)\.[0-9]+$'; then
-                # Son sayıyı bul ve artır
+              if echo "$version" | grep -qE '\.[0-9]+$'; then
                 local base=$(echo "$version" | sed -E 's/\.[0-9]+$//')
                 local last_num=$(echo "$version" | grep -oE '[0-9]+$')
                 local new_num=$((last_num + 1))
                 echo "${base}.${new_num}"
               else
-                # Eğer prerelease ama numarası yoksa .1 ekle
+                # Eğer son karakter sayı değilse .1 ekle
                 echo "${version}.1"
               fi
             else
@@ -119,20 +137,21 @@ jobs:
              
              if [[ "$MODE" == "beta" || "$MODE" == "all" ]]; then
                 if [ -n "$LATEST_BETA" ] && [ "$LATEST_BETA" != "null" ]; then
-                  # Upstream versiyondan 'v' ve BÜTÜN '-slim' sufixlerini temizle
-                  UPSTREAM_VER=$(echo "$LATEST_BETA" | sed 's/^v//' | sed 's/-slim//g')
+                  # Upstream versiyonunu temizle
+                  UPSTREAM_VER=$(clean_version "$LATEST_BETA")
                   
+                  echo "DEBUG: Upstream beta tag: $LATEST_BETA" >&2
                   echo "DEBUG: Upstream beta version (cleaned): $UPSTREAM_VER" >&2
                   
                   # Son slim release'imizi kontrol et
                   OUR_RELEASES=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases")
                   LAST_SLIM_BETA=$(echo "$OUR_RELEASES" | jq -r '[.[] | select(.prerelease == true and (.tag_name | contains("-slim")))] | .[0] | .tag_name')
                   
-                  echo "DEBUG: Last slim beta release: $LAST_SLIM_BETA" >&2
+                  echo "DEBUG: Last slim beta release tag: $LAST_SLIM_BETA" >&2
                   
                   if [ -n "$LAST_SLIM_BETA" ] && [ "$LAST_SLIM_BETA" != "null" ]; then
-                    # Son versiyonumuzu temizle ve arttır
-                    LAST_VER=$(echo "$LAST_SLIM_BETA" | sed 's/^v//' | sed 's/-slim$//')
+                    # Son versiyonumuzu temizle
+                    LAST_VER=$(clean_version "$LAST_SLIM_BETA")
                     echo "DEBUG: Last version (cleaned): $LAST_VER" >&2
                     
                     # Upstream versiyonla karşılaştır
@@ -157,20 +176,21 @@ jobs:
              
              if [[ "$MODE" == "stable" || "$MODE" == "all" ]]; then
                 if [ -n "$LATEST_STABLE" ] && [ "$LATEST_STABLE" != "null" ]; then
-                  # Upstream versiyondan 'v' ve BÜTÜN '-slim' sufixlerini temizle
-                  UPSTREAM_VER=$(echo "$LATEST_STABLE" | sed 's/^v//' | sed 's/-slim//g')
+                  # Upstream versiyonunu temizle
+                  UPSTREAM_VER=$(clean_version "$LATEST_STABLE")
                   
+                  echo "DEBUG: Upstream stable tag: $LATEST_STABLE" >&2
                   echo "DEBUG: Upstream stable version (cleaned): $UPSTREAM_VER" >&2
                   
                   # Son slim stable release'imizi kontrol et
                   OUR_RELEASES=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases")
                   LAST_SLIM_STABLE=$(echo "$OUR_RELEASES" | jq -r '[.[] | select(.prerelease == false and (.tag_name | contains("-slim")))] | .[0] | .tag_name')
                   
-                  echo "DEBUG: Last slim stable release: $LAST_SLIM_STABLE" >&2
+                  echo "DEBUG: Last slim stable release tag: $LAST_SLIM_STABLE" >&2
                   
                   if [ -n "$LAST_SLIM_STABLE" ] && [ "$LAST_SLIM_STABLE" != "null" ]; then
-                    # Son versiyonumuzu temizle ve arttır
-                    LAST_VER=$(echo "$LAST_SLIM_STABLE" | sed 's/^v//' | sed 's/-slim$//')
+                    # Son versiyonumuzu temizle
+                    LAST_VER=$(clean_version "$LAST_SLIM_STABLE")
                     echo "DEBUG: Last version (cleaned): $LAST_VER" >&2
                     
                     # Upstream versiyonla karşılaştır
@@ -223,8 +243,12 @@ jobs:
           # Use branch if provided, otherwise use tag
           ref: ${{ inputs.upstream_branch != '' && inputs.upstream_branch || matrix.config.tag }}
           fetch-depth: 0
-          submodules: 'clients/android'
           path: sing-box
+
+      - name: Checkout submodules
+        working-directory: sing-box
+        run: |
+          git submodule update --init --recursive clients/android
 
       - name: Apply slim modifications
         run: |
@@ -486,4 +510,3 @@ jobs:
           make_latest: ${{ matrix.config.prerelease == false }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          

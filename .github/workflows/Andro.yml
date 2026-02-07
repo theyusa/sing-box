@@ -3,11 +3,6 @@ name: Build Android (?)
 on:
   workflow_dispatch:
     inputs:
-      upstream_branch:
-        description: "Upstream branch/tag to build from"
-        required: true
-        type: string
-        default: "main"
       android_client_branch:
         description: "Android client branch (dev or test)"
         required: false
@@ -41,10 +36,9 @@ jobs:
           set -euo pipefail
           
           # GitHub Actions run number kullan (her workflow çalıştığında 1 artar)
-          # İlk çalıştırma: 1, ikinci: 2, üçüncü: 3...
           RUN_NUM=${{ github.run_number }}
           
-          # Versiyon oluştur: dev-v1.0, dev-v1.1, dev-v1.2...
+          # Versiyon oluştur: dev-v1.1, dev-v1.2, dev-v1.3...
           NEW_VERSION="dev-v1.${RUN_NUM}"
           
           echo "Generated version: $NEW_VERSION (based on run #${RUN_NUM})"
@@ -52,8 +46,7 @@ jobs:
           # JSON oluştur
           VERSIONS_JSON=$(jq -n \
             --arg v "$NEW_VERSION" \
-            --arg t "${{ inputs.upstream_branch }}" \
-            '[{"version": $v, "tag": $t, "prerelease": true}]')
+            '[{"version": $v, "prerelease": true}]')
           
           echo "Generated Matrix:"
           echo "$VERSIONS_JSON" | jq .
@@ -73,52 +66,46 @@ jobs:
       matrix:
         config: ${{ fromJson(needs.strategy_matrix.outputs.matrix) }}
     steps:
-      - name: Checkout custom
-        uses: actions/checkout@v4
-        with: { path: custom }
-
-      - name: Checkout upstream
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: TheYusa/sing-box
-          ref: ${{ matrix.config.tag }}
           fetch-depth: 0
-          path: sing-box
 
       - name: Verify directory structure
         run: |
-          echo "=== Checking sing-box directory structure ==="
-          ls -la sing-box/
+          echo "=== Repository structure ==="
+          ls -la
           echo ""
-          echo "=== Checking if cmd directory exists ==="
-          if [ -d "sing-box/cmd" ]; then
-            echo "✓ cmd directory exists"
-            ls -la sing-box/cmd/
+          echo "=== Checking required directories ==="
+          
+          # include klasörü kontrolü
+          if [ -d "include" ]; then
+            echo "✓ include directory exists"
+            ls -la include/
           else
-            echo "✗ cmd directory NOT found!"
-          fi
-          echo ""
-          echo "=== Checking if cmd/libbox exists ==="
-          if [ -d "sing-box/cmd/libbox" ]; then
-            echo "✓ cmd/libbox directory exists"
-            ls -la sing-box/cmd/libbox/
-          else
-            echo "✗ cmd/libbox directory NOT found!"
-          fi
-
-      - name: Apply slim modifications
-        run: |
-          # İlk önce dizinlerin var olduğunu kontrol et
-          if [ ! -d "sing-box/include" ]; then
-            echo "ERROR: sing-box/include directory not found!"
+            echo "✗ include directory NOT found!"
             exit 1
           fi
           
-          cp custom/include/registry.go sing-box/include/registry.go
-          cp custom/include/quic.go sing-box/include/quic.go
-          cp custom/include/quic_stub.go sing-box/include/quic_stub.go
+          # libbox kontrolü (iki farklı lokasyon)
+          if [ -d "experimental/libbox" ]; then
+            echo "✓ experimental/libbox exists"
+          elif [ -d "cmd/libbox" ]; then
+            echo "✓ cmd/libbox exists"
+          else
+            echo "✗ libbox NOT found in expected locations!"
+            echo "Available directories:"
+            find . -maxdepth 2 -type d -name "*libbox*" || echo "No libbox directory found"
+            exit 1
+          fi
           
-          echo "Slim modifications applied successfully"
+          # build_libbox tool kontrolü
+          if [ -d "cmd/internal/build_libbox" ]; then
+            echo "✓ cmd/internal/build_libbox exists"
+          else
+            echo "✗ cmd/internal/build_libbox NOT found!"
+            exit 1
+          fi
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -129,73 +116,48 @@ jobs:
         uses: nttld/setup-ndk@v1
         with: { ndk-version: r28, add-to-path: false }
 
-      - name: Build box
-        working-directory: sing-box
-        run: |-
-          # Dizin kontrolü
-          if [ ! -d "cmd/libbox" ]; then
-            echo "ERROR: cmd/libbox directory not found!"
-            echo "Current directory: $(pwd)"
-            echo "Directory contents:"
-            find . -maxdepth 3 -type d
-            exit 1
-          fi
-          
-          export CGO_ENABLED=1
-          export GOOS=android
-          go build -v -trimpath -tags "$SLIM_TAGS" \
-            -ldflags "-X github.com/sagernet/sing-box/constant.Version=${{ matrix.config.version }} -s -w -buildid=" \
-            -o libbox.so ./cmd/libbox
-          ls -lh libbox.so
-
-      - name: Build box (Naive)
-        working-directory: sing-box
-        run: |-
-          export CGO_ENABLED=1
-          export GOOS=android
-          go build -v -trimpath -tags "$SLIM_TAGS_NAIVE" \
-            -ldflags "-X github.com/sagernet/sing-box/constant.Version=${{ matrix.config.version }} -s -w -buildid=" \
-            -o libbox-naive.so ./cmd/libbox
-          ls -lh libbox-naive.so
-
       - name: Build libbox.aar
-        working-directory: sing-box
         run: |-
-          # cmd/internal/build_libbox kontrolü
-          if [ ! -d "cmd/internal/build_libbox" ]; then
-            echo "ERROR: cmd/internal/build_libbox not found!"
+          echo "Building libbox.aar..."
+          
+          # build_libbox tool'unu derle
+          go build -v ./cmd/internal/build_libbox
+          
+          # libbox.aar oluştur
+          ./build_libbox -o libbox.aar -t "$SLIM_TAGS"
+          
+          # Kontrol et
+          if [ -f "libbox.aar" ]; then
+            echo "✓ libbox.aar built successfully"
+            ls -lh libbox.aar
+          else
+            echo "✗ libbox.aar build failed!"
             exit 1
           fi
-          
-          mkdir -p clients/android/app/libs
-          go run ./cmd/internal/build_libbox -o libbox.aar -t "$SLIM_TAGS"
-          ls -lh libbox.aar
 
       - name: Checkout Android client
         uses: actions/checkout@v4
         with:
           repository: ElegaPhantom/sing-box-for-android
           ref: ${{ inputs.android_client_branch }}
-          path: sing-box/clients/android
+          path: clients/android
 
       - name: Set version.properties
-        working-directory: sing-box
         run: |
           VERSION="${{ matrix.config.version }}"
           
           # Version code hesapla (timestamp based)
           VERSION_CODE=$(date +%Y%m%d%H)
           
-          # Check if version.properties already exists
-          if [ ! -f clients/android/version.properties ]; then
-            echo "VERSION_CODE=${VERSION_CODE}" > clients/android/version.properties
-            echo "VERSION_NAME=${VERSION}" >> clients/android/version.properties
-          fi
+          # version.properties oluştur
+          mkdir -p clients/android
+          echo "VERSION_CODE=${VERSION_CODE}" > clients/android/version.properties
+          echo "VERSION_NAME=${VERSION}" >> clients/android/version.properties
           
+          echo "Created version.properties:"
           cat clients/android/version.properties
 
       - name: Setup Keystore
-        working-directory: sing-box
         run: |-
           cd clients/android
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore
@@ -206,18 +168,19 @@ jobs:
           EOF
 
       - name: Patch Gradle (Arm64 Only)
-        working-directory: sing-box
         run: |-
           cd clients/android/app
           sed -i 's/include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")/include("arm64-v8a")/' build.gradle.kts
           sed -i 's/isUniversalApk = true/isUniversalApk = false/' build.gradle.kts
 
       - name: Build APK
-        working-directory: sing-box
         run: |-
+          # libbox.aar'ı Android projesi içine kopyala
           mkdir -p clients/android/app/libs
           cp libbox.aar clients/android/app/libs/
           cp libbox.aar clients/android/app/libs/libbox-legacy.aar
+          
+          # APK build et
           cd clients/android
           ./gradlew :app:assembleOtherRelease --no-daemon
         env:
@@ -227,11 +190,14 @@ jobs:
       - name: Prepare Artifacts
         run: |-
           mkdir -p dist
-          find sing-box/clients/android/app/build/outputs/apk/other/release -name "*.apk" -exec cp {} dist/ \;
           
-          # Generate version metadata for updater
-          VERSION_CODE=$(grep VERSION_CODE sing-box/clients/android/version.properties | cut -d= -f2)
-          VERSION_NAME=$(grep VERSION_NAME sing-box/clients/android/version.properties | cut -d= -f2)
+          # APK'yı bul ve kopyala
+          find clients/android/app/build/outputs/apk/other/release -name "*.apk" -exec cp {} dist/ \;
+          
+          # Version metadata oluştur
+          VERSION_CODE=$(grep VERSION_CODE clients/android/version.properties | cut -d= -f2)
+          VERSION_NAME=$(grep VERSION_NAME clients/android/version.properties | cut -d= -f2)
+          
           cat > dist/SFA-version-metadata.json << EOF
           {
             "version_code": ${VERSION_CODE},
@@ -239,8 +205,12 @@ jobs:
           }
           EOF
           
+          # APK'yı yeniden adlandır
           cd dist
           mv *.apk "sing-box-${{ matrix.config.version }}-android-arm64.apk"
+          
+          echo "Artifacts prepared:"
+          ls -lh
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -272,7 +242,9 @@ jobs:
         run: |
           mkdir -p release_files
           find artifacts -type f -exec cp {} release_files/ \;
-          ls -la release_files/
+          
+          echo "Release files:"
+          ls -lh release_files/
 
       - name: Generate Changelog
         id: changelog
@@ -280,22 +252,19 @@ jobs:
           # Build date
           BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           
-          # Upstream tag/branch
-          UPSTREAM_REF="${{ matrix.config.tag }}"
-          
           # Changelog oluştur
-          cat > changelog.md << EOF
+          cat > changelog.md << 'EOF'
           ## 🎯 Development Build #${{ github.run_number }}
           
-          This is a **custom slim build** based on TheYusa/sing-box @ \`${UPSTREAM_REF}\`.
+          Custom slim build of sing-box for Android.
           
           ### 📦 Downloads
           
           | Platform | Architecture | File |
           |----------|--------------|------|
-          | Android | ARM64 | [\`sing-box-${{ matrix.config.version }}-android-arm64.apk\`](../../releases/download/${{ matrix.config.version }}/sing-box-${{ matrix.config.version }}-android-arm64.apk) |
+          | Android | ARM64 | [`sing-box-${{ matrix.config.version }}-android-arm64.apk`](../../releases/download/${{ matrix.config.version }}/sing-box-${{ matrix.config.version }}-android-arm64.apk) |
           
-          **Metadata**: [\`SFA-version-metadata.json\`](../../releases/download/${{ matrix.config.version }}/SFA-version-metadata.json)
+          **Metadata**: [`SFA-version-metadata.json`](../../releases/download/${{ matrix.config.version }}/SFA-version-metadata.json)
           
           ---
           
@@ -306,7 +275,7 @@ jobs:
           - **Special**: NaiveProxy support
           - **Performance**: GVISOR, QUIC, uTLS, Clash API
           
-          ### ❌ Removed
+          ### ❌ Removed (to reduce size)
           - Tor, SSH, ShadowTLS, AnyTLS
           - TUIC, Hysteria v1
           - WireGuard, Tailscale
@@ -319,7 +288,6 @@ jobs:
           |------|-------|
           | **Build Date** | ${BUILD_DATE} |
           | **Build Number** | #${{ github.run_number }} |
-          | **Upstream Ref** | ${UPSTREAM_REF} |
           | **Android NDK** | r28 |
           | **Go Version** | 1.25.5 |
           | **Min Android API** | 23 (Android 6.0+) |
@@ -335,19 +303,22 @@ jobs:
           
           ## ⚠️ Notes
           
-          - ARM64 only - will not work on 32-bit devices
-          - Based on [TheYusa/sing-box](https://github.com/TheYusa/sing-box)
+          - **ARM64 only** - will not work on 32-bit devices
+          - This is a custom slim build optimized for size and performance
           
           ---
           
           <sub>🤖 Auto-generated by [slim-build workflow](../../actions) on ${BUILD_DATE}</sub>
           EOF
           
+          # Değişkenleri değiştir
+          sed -i "s/\${BUILD_DATE}/${BUILD_DATE}/g" changelog.md
+          
           # Output için encode et
           {
-            echo "changelog<<EOF"
+            echo "changelog<<EOFMARKER"
             cat changelog.md
-            echo "EOF"
+            echo "EOFMARKER"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create Release
@@ -362,3 +333,4 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          

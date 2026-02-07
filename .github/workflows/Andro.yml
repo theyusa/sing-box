@@ -114,26 +114,37 @@ jobs:
       - name: Setup NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
-        with: { ndk-version: r28, add-to-path: false }
+        with: 
+          ndk-version: r28
+          add-to-path: false
+          link-to-sdk: false
+          local-cache: false
 
       - name: Build libbox.aar
         run: |-
           echo "Building libbox.aar..."
           
-          # build_libbox tool'unu derle
-          go build -v ./cmd/internal/build_libbox
+          # Build tags'i environment variable olarak ayarla
+          export TAGS="$SLIM_TAGS"
           
-          # libbox.aar oluştur
-          ./build_libbox -o libbox.aar -t "$SLIM_TAGS"
+          # build_libbox tool'unu çalıştır (doğru parametrelerle)
+          go run ./cmd/internal/build_libbox -target android
           
-          # Kontrol et
+          # Kontrol et - libbox.aar genellikle clients/android/app/libs/ altında oluşur
           if [ -f "libbox.aar" ]; then
-            echo "✓ libbox.aar built successfully"
+            echo "✓ libbox.aar found in root"
+            ls -lh libbox.aar
+          elif [ -f "clients/android/app/libs/libbox.aar" ]; then
+            echo "✓ libbox.aar found in clients/android/app/libs/"
+            cp clients/android/app/libs/libbox.aar .
             ls -lh libbox.aar
           else
-            echo "✗ libbox.aar build failed!"
+            echo "✗ Searching for libbox.aar..."
+            find . -name "libbox.aar" -type f
             exit 1
           fi
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
       - name: Checkout Android client
         uses: actions/checkout@v4

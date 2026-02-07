@@ -240,21 +240,44 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: TheYusa/sing-box
-          # Use branch if provided, otherwise use tag
           ref: ${{ inputs.upstream_branch != '' && inputs.upstream_branch || matrix.config.tag }}
           fetch-depth: 0
           path: sing-box
 
-      - name: Checkout submodules
-        working-directory: sing-box
+      - name: Verify directory structure
         run: |
-          git submodule update --init --recursive clients/android
+          echo "=== Checking sing-box directory structure ==="
+          ls -la sing-box/
+          echo ""
+          echo "=== Checking if cmd directory exists ==="
+          if [ -d "sing-box/cmd" ]; then
+            echo "✓ cmd directory exists"
+            ls -la sing-box/cmd/
+          else
+            echo "✗ cmd directory NOT found!"
+          fi
+          echo ""
+          echo "=== Checking if cmd/libbox exists ==="
+          if [ -d "sing-box/cmd/libbox" ]; then
+            echo "✓ cmd/libbox directory exists"
+            ls -la sing-box/cmd/libbox/
+          else
+            echo "✗ cmd/libbox directory NOT found!"
+          fi
 
       - name: Apply slim modifications
         run: |
+          # İlk önce dizinlerin var olduğunu kontrol et
+          if [ ! -d "sing-box/include" ]; then
+            echo "ERROR: sing-box/include directory not found!"
+            exit 1
+          fi
+          
           cp custom/include/registry.go sing-box/include/registry.go
           cp custom/include/quic.go sing-box/include/quic.go
           cp custom/include/quic_stub.go sing-box/include/quic_stub.go
+          
+          echo "Slim modifications applied successfully"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -268,6 +291,15 @@ jobs:
       - name: Build box
         working-directory: sing-box
         run: |-
+          # Dizin kontrolü
+          if [ ! -d "cmd/libbox" ]; then
+            echo "ERROR: cmd/libbox directory not found!"
+            echo "Current directory: $(pwd)"
+            echo "Directory contents:"
+            find . -maxdepth 3 -type d
+            exit 1
+          fi
+          
           export CGO_ENABLED=1
           export GOOS=android
           go build -v -trimpath -tags "$SLIM_TAGS" \
@@ -288,6 +320,12 @@ jobs:
       - name: Build libbox.aar
         working-directory: sing-box
         run: |-
+          # cmd/internal/build_libbox kontrolü
+          if [ ! -d "cmd/internal/build_libbox" ]; then
+            echo "ERROR: cmd/internal/build_libbox not found!"
+            exit 1
+          fi
+          
           mkdir -p clients/android/app/libs
           go run ./cmd/internal/build_libbox -o libbox.aar -t "$SLIM_TAGS"
           ls -lh libbox.aar

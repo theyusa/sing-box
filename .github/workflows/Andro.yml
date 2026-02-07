@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           
-          # GitHub Actions run number kullan (her workflow çalıştığında 1 artar)
+          # GitHub Actions run number kullan
           RUN_NUM=${{ github.run_number }}
           
           # Versiyon oluştur: dev-v1.1, dev-v1.2, dev-v1.3...
@@ -71,42 +71,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify directory structure
-        run: |
-          echo "=== Repository structure ==="
-          ls -la
-          echo ""
-          echo "=== Checking required directories ==="
-          
-          # include klasörü kontrolü
-          if [ -d "include" ]; then
-            echo "✓ include directory exists"
-            ls -la include/
-          else
-            echo "✗ include directory NOT found!"
-            exit 1
-          fi
-          
-          # libbox kontrolü (iki farklı lokasyon)
-          if [ -d "experimental/libbox" ]; then
-            echo "✓ experimental/libbox exists"
-          elif [ -d "cmd/libbox" ]; then
-            echo "✓ cmd/libbox exists"
-          else
-            echo "✗ libbox NOT found in expected locations!"
-            echo "Available directories:"
-            find . -maxdepth 2 -type d -name "*libbox*" || echo "No libbox directory found"
-            exit 1
-          fi
-          
-          # build_libbox tool kontrolü
-          if [ -d "cmd/internal/build_libbox" ]; then
-            echo "✓ cmd/internal/build_libbox exists"
-          else
-            echo "✗ cmd/internal/build_libbox NOT found!"
-            exit 1
-          fi
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with: 
@@ -134,37 +98,54 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           
-          # gomobile init
+          # Add to PATH
           export PATH=$PATH:$(go env GOPATH)/bin
+          
+          # Initialize gomobile
           gomobile init
           
-          # Verify installation
+          echo "Gomobile installed successfully"
           which gomobile
           gomobile version
 
-      - name: Build libbox.aar
+      - name: Check build_libbox usage
+        run: |
+          echo "=== Checking build_libbox tool usage ==="
+          go run ./cmd/internal/build_libbox -h || true
+          
+          echo ""
+          echo "=== Checking if custom build script exists ==="
+          if [ -f "Makefile" ]; then
+            echo "Makefile found, checking for libbox targets..."
+            grep -i "libbox" Makefile || echo "No libbox targets in Makefile"
+          fi
+
+      - name: Build libbox.aar (Direct gomobile)
         run: |-
-          echo "Building libbox.aar..."
+          echo "Building libbox.aar with gomobile bind..."
           
           # Add gomobile to PATH
           export PATH=$PATH:$(go env GOPATH)/bin
           
-          # Build tags'i environment variable olarak ayarla
-          export TAGS="$SLIM_TAGS"
+          # Build with gomobile bind directly
+          cd experimental/libbox || cd cmd/libbox || { echo "libbox directory not found!"; exit 1; }
           
-          # build_libbox tool'unu çalıştır (doğru parametrelerle)
-          go run ./cmd/internal/build_libbox -target android
+          gomobile bind -v \
+            -target android \
+            -androidapi 21 \
+            -javapkg=io.nekohasekai \
+            -tags "$SLIM_TAGS" \
+            -trimpath \
+            -buildmode=default \
+            -ldflags="-s -w -buildid=" \
+            -o ../../libbox.aar \
+            ./
           
-          # Kontrol et - libbox.aar genellikle clients/android/app/libs/ altında oluşur
-          echo "Searching for libbox.aar..."
-          find . -name "libbox.aar" -type f
+          cd ../..
           
+          # Verify
           if [ -f "libbox.aar" ]; then
-            echo "✓ libbox.aar found in root"
-            ls -lh libbox.aar
-          elif [ -f "clients/android/app/libs/libbox.aar" ]; then
-            echo "✓ libbox.aar found in clients/android/app/libs/"
-            cp clients/android/app/libs/libbox.aar .
+            echo "✓ libbox.aar built successfully"
             ls -lh libbox.aar
           else
             echo "✗ libbox.aar not found!"
@@ -184,11 +165,8 @@ jobs:
       - name: Set version.properties
         run: |
           VERSION="${{ matrix.config.version }}"
-          
-          # Version code hesapla (timestamp based)
           VERSION_CODE=$(date +%Y%m%d%H)
           
-          # version.properties oluştur
           mkdir -p clients/android
           echo "VERSION_CODE=${VERSION_CODE}" > clients/android/version.properties
           echo "VERSION_NAME=${VERSION}" >> clients/android/version.properties
@@ -214,12 +192,12 @@ jobs:
 
       - name: Build APK
         run: |-
-          # libbox.aar'ı Android projesi içine kopyala
+          # Copy libbox.aar to Android project
           mkdir -p clients/android/app/libs
           cp libbox.aar clients/android/app/libs/
           cp libbox.aar clients/android/app/libs/libbox-legacy.aar
           
-          # APK build et
+          # Build APK
           cd clients/android
           chmod +x ./gradlew
           ./gradlew :app:assembleOtherRelease --no-daemon
@@ -230,10 +208,10 @@ jobs:
         run: |-
           mkdir -p dist
           
-          # APK'yı bul ve kopyala
+          # Find and copy APK
           find clients/android/app/build/outputs/apk/other/release -name "*.apk" -exec cp {} dist/ \;
           
-          # Version metadata oluştur
+          # Create version metadata
           VERSION_CODE=$(grep VERSION_CODE clients/android/version.properties | cut -d= -f2)
           VERSION_NAME=$(grep VERSION_NAME clients/android/version.properties | cut -d= -f2)
           
@@ -244,7 +222,7 @@ jobs:
           }
           EOF
           
-          # APK'yı yeniden adlandır
+          # Rename APK
           cd dist
           mv *.apk "sing-box-${{ matrix.config.version }}-android-arm64.apk"
           
@@ -288,10 +266,8 @@ jobs:
       - name: Generate Changelog
         id: changelog
         run: |
-          # Build date
           BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           
-          # Changelog oluştur
           cat > changelog.md << 'EOF'
           ## 🎯 Development Build #${{ github.run_number }}
           
@@ -329,7 +305,7 @@ jobs:
           | **Build Number** | #${{ github.run_number }} |
           | **Android NDK** | r28 |
           | **Go Version** | 1.23 |
-          | **Min Android API** | 23 (Android 6.0+) |
+          | **Min Android API** | 21 |
           
           ---
           
@@ -350,10 +326,8 @@ jobs:
           <sub>🤖 Auto-generated by [slim-build workflow](../../actions) on ${BUILD_DATE}</sub>
           EOF
           
-          # Değişkenleri değiştir
           sed -i "s/\${BUILD_DATE}/${BUILD_DATE}/g" changelog.md
           
-          # Output için encode et
           {
             echo "changelog<<EOFMARKER"
             cat changelog.md
@@ -372,4 +346,3 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          

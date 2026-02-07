@@ -3,6 +3,24 @@ name: Build Android (?)
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: "Specific version (e.g., 1.13.0-beta.4). Leave empty for auto-increment."
+        required: false
+        type: string
+      mode:
+        description: "Build Mode (Ignore if Version set)"
+        required: true
+        default: "beta"
+        type: choice
+        options:
+          - beta
+          - stable
+          - all
+      upstream_branch:
+        description: "Upstream branch to use (leave empty to use tag from version/mode)"
+        required: false
+        type: string
+        default: ""
       android_client_branch:
         description: "Android client branch (dev or test)"
         required: false
@@ -35,23 +53,115 @@ jobs:
         run: |
           set -euo pipefail
           
-          # GitHub Actions run number kullan (her workflow Ã§alÄ±ÅŸtÄ±ÄŸÄ±nda 1 artar)
-          RUN_NUM=${{ github.run_number }}
+          # Initialize lists
+          VERSIONS_JSON="[]"
           
-          # Versiyon oluÅŸtur: dev-v1.1, dev-v1.2, dev-v1.3...
-          NEW_VERSION="dev-v1.${RUN_NUM}"
+          add_version() {
+            local v=$1
+            local t=$2
+            local p=$3
+            # Use jq to append object to array
+            VERSIONS_JSON=$(echo "$VERSIONS_JSON" | jq --arg v "$v" --arg t "$t" --argjson p "$p" \
+              '. + [{"version": $v, "tag": $t, "prerelease": $p}]')
+          }
           
-          echo "Generated version: $NEW_VERSION (based on run #${RUN_NUM})"
-          
-          # JSON oluÅŸtur
-          VERSIONS_JSON=$(jq -n \
-            --arg v "$NEW_VERSION" \
-            '[{"version": $v, "prerelease": true}]')
+          increment_version() {
+            local version=$1
+            local is_prerelease=$2
+            
+            if [ "$is_prerelease" = true ]; then
+              # Beta/RC versiyonları: 1.13.0-beta.4 -> 1.13.0-beta.5
+              if echo "$version" | grep -qE '(alpha|beta|rc)\.[0-9]+$'; then
+                local base=$(echo "$version" | sed -E 's/(alpha|beta|rc)\.[0-9]+$//')
+                local type=$(echo "$version" | grep -oE '(alpha|beta|rc)')
+                local num=$(echo "$version" | grep -oE '[0-9]+$')
+                local new_num=$((num + 1))
+                echo "${base}${type}.${new_num}"
+              else
+                # Eğer prerelease ama numarası yoksa .1 ekle
+                echo "${version}.1"
+              fi
+            else
+              # Stable versiyonlar: 1.13.0 -> 1.13.1
+              local major=$(echo "$version" | cut -d. -f1)
+              local minor=$(echo "$version" | cut -d. -f2)
+              local patch=$(echo "$version" | cut -d. -f3 | cut -d- -f1)
+              local new_patch=$((patch + 1))
+              echo "${major}.${minor}.${new_patch}"
+            fi
+          }
+
+          if [ -n "${{ inputs.version }}" ]; then
+             # Manuel Version
+             VER="${{ inputs.version }}"
+             TAG="v${VER}"
+             # Guess prerelease based on hyphen
+             if [[ "$VER" == *"-"* ]]; then PRE=true; else PRE=false; fi
+             add_version "$VER" "$TAG" "$PRE"
+             echo "Mode: Manual ($VER)"
+          else
+             # Fetch from Upstream
+             echo "Fetching releases from TheYusa/sing-box..."
+             RELEASES_JSON=$(curl -s "https://api.github.com/repos/TheYusa/sing-box/releases")
+             
+             LATEST_BETA=$(echo "$RELEASES_JSON" | jq -r '[.[] | select(.prerelease == true)] | .[0] | .tag_name')
+             LATEST_STABLE=$(echo "$RELEASES_JSON" | jq -r '[.[] | select(.prerelease == false)] | .[0] | .tag_name')
+             
+             MODE="${{ inputs.mode }}"
+             
+             if [[ "$MODE" == "beta" || "$MODE" == "all" ]]; then
+                if [ -n "$LATEST_BETA" ] && [ "$LATEST_BETA" != "null" ]; then
+                  # Upstream versiyondan 'v' ve '-slim' temizle
+                  UPSTREAM_VER=$(echo "$LATEST_BETA" | sed 's/^v//' | sed 's/-slim$//')
+                  
+                  # Son slim release'imizi kontrol et
+                  OUR_RELEASES=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases")
+                  LAST_SLIM_BETA=$(echo "$OUR_RELEASES" | jq -r '[.[] | select(.prerelease == true and (.tag_name | contains("slim")))] | .[0] | .tag_name')
+                  
+                  if [ -n "$LAST_SLIM_BETA" ] && [ "$LAST_SLIM_BETA" != "null" ]; then
+                    LAST_VER=$(echo "$LAST_SLIM_BETA" | sed 's/^v//' | sed 's/-slim$//')
+                    # Son versiyonumuzu arttır
+                    VER=$(increment_version "$LAST_VER" true)
+                    echo "Auto-increment Beta: $LAST_VER -> $VER"
+                  else
+                    # Hiç slim release yoksa upstream'i kullan
+                    VER="$UPSTREAM_VER"
+                    echo "First Beta Release: $VER"
+                  fi
+                  
+                  add_version "$VER" "$LATEST_BETA" true
+                fi
+             fi
+             
+             if [[ "$MODE" == "stable" || "$MODE" == "all" ]]; then
+                if [ -n "$LATEST_STABLE" ] && [ "$LATEST_STABLE" != "null" ]; then
+                  # Upstream versiyondan 'v' ve '-slim' temizle
+                  UPSTREAM_VER=$(echo "$LATEST_STABLE" | sed 's/^v//' | sed 's/-slim$//')
+                  
+                  # Son slim stable release'imizi kontrol et
+                  OUR_RELEASES=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases")
+                  LAST_SLIM_STABLE=$(echo "$OUR_RELEASES" | jq -r '[.[] | select(.prerelease == false and (.tag_name | contains("slim")))] | .[0] | .tag_name')
+                  
+                  if [ -n "$LAST_SLIM_STABLE" ] && [ "$LAST_SLIM_STABLE" != "null" ]; then
+                    LAST_VER=$(echo "$LAST_SLIM_STABLE" | sed 's/^v//' | sed 's/-slim$//')
+                    # Son versiyonumuzu arttır
+                    VER=$(increment_version "$LAST_VER" false)
+                    echo "Auto-increment Stable: $LAST_VER -> $VER"
+                  else
+                    # Hiç slim release yoksa upstream'i kullan
+                    VER="$UPSTREAM_VER"
+                    echo "First Stable Release: $VER"
+                  fi
+                  
+                  add_version "$VER" "$LATEST_STABLE" false
+                fi
+             fi
+          fi
           
           echo "Generated Matrix:"
           echo "$VERSIONS_JSON" | jq .
           
-          # Set output
+          # Set output (compress json to one line)
           echo "matrix=$(echo "$VERSIONS_JSON" | jq -c .)" >> "$GITHUB_OUTPUT"
 
   # ============================================================================
@@ -66,137 +176,100 @@ jobs:
       matrix:
         config: ${{ fromJson(needs.strategy_matrix.outputs.matrix) }}
     steps:
-      - name: Checkout repository
+      - name: Checkout custom
+        uses: actions/checkout@v4
+        with: { path: custom }
+
+      - name: Checkout upstream
         uses: actions/checkout@v4
         with:
+          repository: TheYusa/sing-box
+          # Use branch if provided, otherwise use tag
+          ref: ${{ inputs.upstream_branch != '' && inputs.upstream_branch || matrix.config.tag }}
           fetch-depth: 0
+          submodules: 'clients/android'
+          path: sing-box
 
-      - name: Verify directory structure
+      - name: Apply slim modifications
         run: |
-          echo "=== Repository structure ==="
-          ls -la
-          echo ""
-          echo "=== Checking required directories ==="
-          
-          # include klasÃ¶rÃ¼ kontrolÃ¼
-          if [ -d "include" ]; then
-            echo "âœ“ include directory exists"
-            ls -la include/
-          else
-            echo "âœ— include directory NOT found!"
-            exit 1
-          fi
-          
-          # libbox kontrolÃ¼ (iki farklÄ± lokasyon)
-          if [ -d "experimental/libbox" ]; then
-            echo "âœ“ experimental/libbox exists"
-          elif [ -d "cmd/libbox" ]; then
-            echo "âœ“ cmd/libbox exists"
-          else
-            echo "âœ— libbox NOT found in expected locations!"
-            echo "Available directories:"
-            find . -maxdepth 2 -type d -name "*libbox*" || echo "No libbox directory found"
-            exit 1
-          fi
-          
-          # build_libbox tool kontrolÃ¼
-          if [ -d "cmd/internal/build_libbox" ]; then
-            echo "âœ“ cmd/internal/build_libbox exists"
-          else
-            echo "âœ— cmd/internal/build_libbox NOT found!"
-            exit 1
-          fi
+          cp custom/include/registry.go sing-box/include/registry.go
+          cp custom/include/quic.go sing-box/include/quic.go
+          cp custom/include/quic_stub.go sing-box/include/quic_stub.go
 
       - name: Setup Go
         uses: actions/setup-go@v5
-        with: 
-          go-version: '1.23'
-          cache: false
+        with: { go-version: ^1.25.5 }
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Setup NDK
+      - name: Setup Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
-        with: 
-          ndk-version: r28
-          add-to-path: false
-          link-to-sdk: false
-          local-cache: false
+        with: { ndk-version: r28, local-cache: true }
 
-      - name: Install gomobile
-        run: |
-          echo "Installing gomobile..."
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          
-          # gomobile init
-          export PATH=$PATH:$(go env GOPATH)/bin
-          gomobile init
-          
-          # Verify installation
-          which gomobile
-          gomobile version
+      - name: Setup OpenJDK
+        run: sudo apt update && sudo apt install -y openjdk-17-jdk-headless
 
-      - name: Build libbox.aar
+      - name: Set tag
+        working-directory: sing-box
+        run: git tag v${{ matrix.config.version }} -f || true
+
+      - name: Build library
+        working-directory: sing-box
         run: |-
-          echo "Building libbox.aar..."
+          make lib_install
+          export PATH="$PATH:$(go env GOPATH)/bin"
           
-          # Add gomobile to PATH
-          export PATH=$PATH:$(go env GOPATH)/bin
+          VERSION="${{ matrix.config.version }}"
+          TAGS="${{ env.SLIM_TAGS_NAIVE }},with_conntrack"
+          LDFLAGS="-X github.com/sagernet/sing-box/constant.Version=${VERSION} -X internal/godebug.defaultGODEBUG=multipathtcp=0 -s -w -buildid= -checklinkname=0"
           
-          # Build tags'i environment variable olarak ayarla
-          export TAGS="$SLIM_TAGS"
-          
-          # build_libbox tool'unu Ã§alÄ±ÅŸtÄ±r (doÄŸru parametrelerle)
-          go run ./cmd/internal/build_libbox -target android
-          
-          # Kontrol et - libbox.aar genellikle clients/android/app/libs/ altÄ±nda oluÅŸur
-          echo "Searching for libbox.aar..."
-          find . -name "libbox.aar" -type f
-          
-          if [ -f "libbox.aar" ]; then
-            echo "âœ“ libbox.aar found in root"
-            ls -lh libbox.aar
-          elif [ -f "clients/android/app/libs/libbox.aar" ]; then
-            echo "âœ“ libbox.aar found in clients/android/app/libs/"
-            cp clients/android/app/libs/libbox.aar .
-            ls -lh libbox.aar
-          else
-            echo "âœ— libbox.aar not found!"
-            exit 1
-          fi
+          gomobile bind -v -o libbox.aar -target android/arm64 -androidapi 23 \
+            -javapkg=io.nekohasekai -libname=box -trimpath -buildvcs=false \
+            -ldflags "${LDFLAGS}" -tags "${TAGS}" ./experimental/libbox
         env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          ANDROID_HOME: /usr/local/lib/android/sdk
 
-      - name: Checkout Android client
-        uses: actions/checkout@v4
+      - name: Checkout Android Client
+        working-directory: sing-box
+        run: |-
+          rm -rf clients/android
+          git clone -b ${{ inputs.android_client_branch }} https://github.com/TheYusa/sing-box-for-android.git clients/android
+
+      - name: Gradle cache
+        uses: actions/cache@v4
         with:
-          repository: ElegaPhantom/sing-box-for-android
-          ref: ${{ inputs.android_client_branch }}
-          path: clients/android
+          path: ~/.gradle
+          key: gradle-android-slim-${{ hashFiles('sing-box/clients/android/**/*.gradle*') }}
 
-      - name: Set version.properties
+      - name: Update Version Properties
+        working-directory: sing-box
         run: |
           VERSION="${{ matrix.config.version }}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH_FULL=$(echo "$VERSION" | cut -d. -f3)
+          PATCH=$(echo "$PATCH_FULL" | cut -d- -f1)
+          PRERELEASE_NUM=0
+          if echo "$VERSION" | grep -q "alpha\|beta"; then
+            PRERELEASE_NUM=$(echo "$VERSION" | grep -oE '[0-9]+$' || echo "0")
+          fi
+          VERSION_CODE=$((MAJOR * 10000000 + MINOR * 100000 + PATCH * 1000 + PRERELEASE_NUM))
           
-          # Version code hesapla (timestamp based)
-          VERSION_CODE=$(date +%Y%m%d%H)
+          # Eğer version.properties dosyası varsa güncelle, yoksa oluştur
+          if [ -f clients/android/version.properties ]; then
+            echo "Updating existing version.properties"
+            sed -i "s/VERSION_CODE=.*/VERSION_CODE=${VERSION_CODE}/" clients/android/version.properties
+            sed -i "s/VERSION_NAME=.*/VERSION_NAME=${VERSION}/" clients/android/version.properties
+          else
+            echo "Creating new version.properties"
+            echo "VERSION_CODE=${VERSION_CODE}" > clients/android/version.properties
+            echo "VERSION_NAME=${VERSION}" >> clients/android/version.properties
+          fi
           
-          # version.properties oluÅŸtur
-          mkdir -p clients/android
-          echo "VERSION_CODE=${VERSION_CODE}" > clients/android/version.properties
-          echo "VERSION_NAME=${VERSION}" >> clients/android/version.properties
-          
-          echo "Created version.properties:"
           cat clients/android/version.properties
 
       - name: Setup Keystore
+        working-directory: sing-box
         run: |-
           cd clients/android
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore
@@ -207,36 +280,32 @@ jobs:
           EOF
 
       - name: Patch Gradle (Arm64 Only)
+        working-directory: sing-box
         run: |-
           cd clients/android/app
           sed -i 's/include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")/include("arm64-v8a")/' build.gradle.kts
           sed -i 's/isUniversalApk = true/isUniversalApk = false/' build.gradle.kts
 
       - name: Build APK
+        working-directory: sing-box
         run: |-
-          # libbox.aar'Ä± Android projesi iÃ§ine kopyala
           mkdir -p clients/android/app/libs
           cp libbox.aar clients/android/app/libs/
           cp libbox.aar clients/android/app/libs/libbox-legacy.aar
-          
-          # APK build et
           cd clients/android
-          chmod +x ./gradlew
           ./gradlew :app:assembleOtherRelease --no-daemon
         env:
-          JAVA_HOME: /opt/hostedtoolcache/Java_Zulu_jdk/17.0.13-11/x64
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
       - name: Prepare Artifacts
         run: |-
           mkdir -p dist
+          find sing-box/clients/android/app/build/outputs/apk/other/release -name "*.apk" -exec cp {} dist/ \;
           
-          # APK'yÄ± bul ve kopyala
-          find clients/android/app/build/outputs/apk/other/release -name "*.apk" -exec cp {} dist/ \;
-          
-          # Version metadata oluÅŸtur
-          VERSION_CODE=$(grep VERSION_CODE clients/android/version.properties | cut -d= -f2)
-          VERSION_NAME=$(grep VERSION_NAME clients/android/version.properties | cut -d= -f2)
-          
+          # Generate version metadata for updater
+          VERSION_CODE=$(grep VERSION_CODE sing-box/clients/android/version.properties | cut -d= -f2)
+          VERSION_NAME=$(grep VERSION_NAME sing-box/clients/android/version.properties | cut -d= -f2)
           cat > dist/SFA-version-metadata.json << EOF
           {
             "version_code": ${VERSION_CODE},
@@ -244,17 +313,14 @@ jobs:
           }
           EOF
           
-          # APK'yÄ± yeniden adlandÄ±r
           cd dist
-          mv *.apk "sing-box-${{ matrix.config.version }}-android-arm64.apk"
-          
-          echo "Artifacts prepared:"
-          ls -lh
+          mv *.apk "sing-box-${{ matrix.config.version }}-android-arm64-slim.apk"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-arm64-${{ matrix.config.version }}
+          # Unique name for each matrix version
+          name: android-arm64-slim-${{ matrix.config.version }}
           path: dist
           retention-days: 1
 
@@ -262,7 +328,7 @@ jobs:
   # CREATE RELEASES
   # ============================================================================
   release:
-    name: Release ${{ matrix.config.version }}
+    name: Release v${{ matrix.config.version }}-slim
     runs-on: ubuntu-latest
     needs: [strategy_matrix, build_android]
     strategy:
@@ -274,101 +340,127 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: "android-arm64-${{ matrix.config.version }}"
+          pattern: "*-slim-${{ matrix.config.version }}"
           merge-multiple: true
 
       - name: Prepare Release Files
         run: |
           mkdir -p release_files
-          find artifacts -type f -exec cp {} release_files/ \;
-          
-          echo "Release files:"
-          ls -lh release_files/
+          # Move files matching current version to release dir
+          find artifacts -type f -name "*${{ matrix.config.version }}*" -exec cp {} release_files/ \;
+          # Also copy the metadata json
+          find artifacts -type f -name "SFA-version-metadata.json" -exec cp {} release_files/ \;
+          ls -la release_files/
 
       - name: Generate Changelog
         id: changelog
         run: |
+          # Upstream değişikliklerini çek
+          UPSTREAM_TAG="${{ matrix.config.tag }}"
+          UPSTREAM_URL="https://github.com/TheYusa/sing-box/releases/tag/${UPSTREAM_TAG}"
+          
+          # Upstream changelog'u fetch et (escape işlemi yapmadan sadece al)
+          UPSTREAM_CHANGELOG=$(curl -s "https://api.github.com/repos/TheYusa/sing-box/releases/tags/${UPSTREAM_TAG}" | jq -r '.body // "No changelog available from upstream"')
+          
+          # Kendi önceki release'imizi bul
+          PREV_RELEASE=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases" | \
+            jq -r --arg current "v${{ matrix.config.version }}-slim" \
+            '[.[] | select(.tag_name != $current and (.tag_name | contains("slim")))] | .[0] | .tag_name // "none"')
+          
           # Build date
           BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           
-          # Changelog oluÅŸtur
-          cat > changelog.md << 'EOF'
-          ## ğŸ¯ Development Build #${{ github.run_number }}
+          # Changelog oluştur (heredoc ile, sed yerine direkt değişken kullan)
+          cat > changelog.md << EOF
+          ## 🎯 What's New
           
-          Custom slim build of sing-box for Android.
+          This is a **Slim Build** based on [sing-box ${{ matrix.config.tag }}](${UPSTREAM_URL}).
           
-          ### ğŸ“¦ Downloads
+          ### 📦 Downloads
           
           | Platform | Architecture | File |
           |----------|--------------|------|
-          | Android | ARM64 | [`sing-box-${{ matrix.config.version }}-android-arm64.apk`](../../releases/download/${{ matrix.config.version }}/sing-box-${{ matrix.config.version }}-android-arm64.apk) |
+          | Android | ARM64 | [\`sing-box-${{ matrix.config.version }}-android-arm64-slim.apk\`](../../releases/download/v${{ matrix.config.version }}-slim/sing-box-${{ matrix.config.version }}-android-arm64-slim.apk) |
           
-          **Metadata**: [`SFA-version-metadata.json`](../../releases/download/${{ matrix.config.version }}/SFA-version-metadata.json)
+          **Metadata**: [\`SFA-version-metadata.json\`](../../releases/download/v${{ matrix.config.version }}-slim/SFA-version-metadata.json)
           
           ---
           
-          ## ğŸ”§ Slim Build Features
+          ## 🔧 Slim Build Modifications
           
-          ### âœ… Included
+          ### ✅ Included Features
           - **Protocols**: VLESS (Reality), VMess, Trojan, Shadowsocks, Hysteria2
           - **Special**: NaiveProxy support
           - **Performance**: GVISOR, QUIC, uTLS, Clash API
+          - **Network**: Connection tracking enabled
           
-          ### âŒ Removed (to reduce size)
+          ### ❌ Removed Features
+          To reduce APK size and improve performance:
           - Tor, SSH, ShadowTLS, AnyTLS
           - TUIC, Hysteria v1
           - WireGuard, Tailscale
           
           ---
           
-          ## ğŸ“Š Build Information
+          ## 📋 Upstream Changelog
+          
+          <details>
+          <summary>View full upstream changelog from TheYusa/sing-box</summary>
+          
+          ${UPSTREAM_CHANGELOG}
+          
+          </details>
+          
+          ---
+          
+          ## 📊 Build Information
           
           | Item | Value |
           |------|-------|
           | **Build Date** | ${BUILD_DATE} |
-          | **Build Number** | #${{ github.run_number }} |
+          | **Upstream Version** | [${{ matrix.config.tag }}](${UPSTREAM_URL}) |
+          | **Previous Release** | ${PREV_RELEASE} |
           | **Android NDK** | r28 |
-          | **Go Version** | 1.23 |
+          | **Go Version** | 1.25.5 |
           | **Min Android API** | 23 (Android 6.0+) |
           
           ---
           
-          ## ğŸš€ Installation
+          ## 🚀 Installation
           
           1. Download the APK file above
           2. Enable "Install from Unknown Sources" in Android settings
           3. Install the APK
           4. Grant necessary permissions
           
-          ## âš ï¸ Notes
+          ## ⚠️ Notes
           
-          - **ARM64 only** - will not work on 32-bit devices
-          - This is a custom slim build optimized for size and performance
+          - This is an **unofficial slim build** optimized for size and common use cases
+          - ARM64 only - will not work on 32-bit devices
+          - Based on [TheYusa/sing-box](https://github.com/TheYusa/sing-box) fork
           
           ---
           
-          <sub>ğŸ¤– Auto-generated by [slim-build workflow](../../actions) on ${BUILD_DATE}</sub>
+          <sub>🤖 Auto-generated by [slim-build workflow](../../actions) on ${BUILD_DATE}</sub>
           EOF
           
-          # DeÄŸiÅŸkenleri deÄŸiÅŸtir
-          sed -i "s/\${BUILD_DATE}/${BUILD_DATE}/g" changelog.md
-          
-          # Output iÃ§in encode et
+          # Output için encode et
           {
-            echo "changelog<<EOFMARKER"
+            echo "changelog<<EOF"
             cat changelog.md
-            echo "EOFMARKER"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ matrix.config.version }}
-          name: "${{ matrix.config.version }} - Slim Build ğŸš€"
+          tag_name: v${{ matrix.config.version }}-slim
+          name: "sing-box v${{ matrix.config.version }} - Slim Build 🚀"
           body: ${{ steps.changelog.outputs.changelog }}
           draft: false
           prerelease: ${{ matrix.config.prerelease }}
           files: release_files/*
-          make_latest: true
+          make_latest: ${{ matrix.config.prerelease == false }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          

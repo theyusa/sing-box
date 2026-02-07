@@ -35,15 +35,15 @@ jobs:
         run: |
           set -euo pipefail
           
-          # GitHub Actions run number kullan (her workflow çalıştığında 1 artar)
+          # GitHub Actions run number kullan (her workflow Ã§alÄ±ÅŸtÄ±ÄŸÄ±nda 1 artar)
           RUN_NUM=${{ github.run_number }}
           
-          # Versiyon oluştur: dev-v1.1, dev-v1.2, dev-v1.3...
+          # Versiyon oluÅŸtur: dev-v1.1, dev-v1.2, dev-v1.3...
           NEW_VERSION="dev-v1.${RUN_NUM}"
           
           echo "Generated version: $NEW_VERSION (based on run #${RUN_NUM})"
           
-          # JSON oluştur
+          # JSON oluÅŸtur
           VERSIONS_JSON=$(jq -n \
             --arg v "$NEW_VERSION" \
             '[{"version": $v, "prerelease": true}]')
@@ -78,38 +78,46 @@ jobs:
           echo ""
           echo "=== Checking required directories ==="
           
-          # include klasörü kontrolü
+          # include klasÃ¶rÃ¼ kontrolÃ¼
           if [ -d "include" ]; then
-            echo "✓ include directory exists"
+            echo "âœ“ include directory exists"
             ls -la include/
           else
-            echo "✗ include directory NOT found!"
+            echo "âœ— include directory NOT found!"
             exit 1
           fi
           
-          # libbox kontrolü (iki farklı lokasyon)
+          # libbox kontrolÃ¼ (iki farklÄ± lokasyon)
           if [ -d "experimental/libbox" ]; then
-            echo "✓ experimental/libbox exists"
+            echo "âœ“ experimental/libbox exists"
           elif [ -d "cmd/libbox" ]; then
-            echo "✓ cmd/libbox exists"
+            echo "âœ“ cmd/libbox exists"
           else
-            echo "✗ libbox NOT found in expected locations!"
+            echo "âœ— libbox NOT found in expected locations!"
             echo "Available directories:"
             find . -maxdepth 2 -type d -name "*libbox*" || echo "No libbox directory found"
             exit 1
           fi
           
-          # build_libbox tool kontrolü
+          # build_libbox tool kontrolÃ¼
           if [ -d "cmd/internal/build_libbox" ]; then
-            echo "✓ cmd/internal/build_libbox exists"
+            echo "âœ“ cmd/internal/build_libbox exists"
           else
-            echo "✗ cmd/internal/build_libbox NOT found!"
+            echo "âœ— cmd/internal/build_libbox NOT found!"
             exit 1
           fi
 
       - name: Setup Go
         uses: actions/setup-go@v5
-        with: { go-version: ^1.25.5 }
+        with: 
+          go-version: '1.23'
+          cache: false
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
 
       - name: Setup NDK
         id: setup-ndk
@@ -120,31 +128,51 @@ jobs:
           link-to-sdk: false
           local-cache: false
 
+      - name: Install gomobile
+        run: |
+          echo "Installing gomobile..."
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          
+          # gomobile init
+          export PATH=$PATH:$(go env GOPATH)/bin
+          gomobile init
+          
+          # Verify installation
+          which gomobile
+          gomobile version
+
       - name: Build libbox.aar
         run: |-
           echo "Building libbox.aar..."
           
+          # Add gomobile to PATH
+          export PATH=$PATH:$(go env GOPATH)/bin
+          
           # Build tags'i environment variable olarak ayarla
           export TAGS="$SLIM_TAGS"
           
-          # build_libbox tool'unu çalıştır (doğru parametrelerle)
+          # build_libbox tool'unu Ã§alÄ±ÅŸtÄ±r (doÄŸru parametrelerle)
           go run ./cmd/internal/build_libbox -target android
           
-          # Kontrol et - libbox.aar genellikle clients/android/app/libs/ altında oluşur
+          # Kontrol et - libbox.aar genellikle clients/android/app/libs/ altÄ±nda oluÅŸur
+          echo "Searching for libbox.aar..."
+          find . -name "libbox.aar" -type f
+          
           if [ -f "libbox.aar" ]; then
-            echo "✓ libbox.aar found in root"
+            echo "âœ“ libbox.aar found in root"
             ls -lh libbox.aar
           elif [ -f "clients/android/app/libs/libbox.aar" ]; then
-            echo "✓ libbox.aar found in clients/android/app/libs/"
+            echo "âœ“ libbox.aar found in clients/android/app/libs/"
             cp clients/android/app/libs/libbox.aar .
             ls -lh libbox.aar
           else
-            echo "✗ Searching for libbox.aar..."
-            find . -name "libbox.aar" -type f
+            echo "âœ— libbox.aar not found!"
             exit 1
           fi
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_HOME: /usr/local/lib/android/sdk
 
       - name: Checkout Android client
         uses: actions/checkout@v4
@@ -160,7 +188,7 @@ jobs:
           # Version code hesapla (timestamp based)
           VERSION_CODE=$(date +%Y%m%d%H)
           
-          # version.properties oluştur
+          # version.properties oluÅŸtur
           mkdir -p clients/android
           echo "VERSION_CODE=${VERSION_CODE}" > clients/android/version.properties
           echo "VERSION_NAME=${VERSION}" >> clients/android/version.properties
@@ -186,26 +214,26 @@ jobs:
 
       - name: Build APK
         run: |-
-          # libbox.aar'ı Android projesi içine kopyala
+          # libbox.aar'Ä± Android projesi iÃ§ine kopyala
           mkdir -p clients/android/app/libs
           cp libbox.aar clients/android/app/libs/
           cp libbox.aar clients/android/app/libs/libbox-legacy.aar
           
           # APK build et
           cd clients/android
+          chmod +x ./gradlew
           ./gradlew :app:assembleOtherRelease --no-daemon
         env:
-          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          JAVA_HOME: /opt/hostedtoolcache/Java_Zulu_jdk/17.0.13-11/x64
 
       - name: Prepare Artifacts
         run: |-
           mkdir -p dist
           
-          # APK'yı bul ve kopyala
+          # APK'yÄ± bul ve kopyala
           find clients/android/app/build/outputs/apk/other/release -name "*.apk" -exec cp {} dist/ \;
           
-          # Version metadata oluştur
+          # Version metadata oluÅŸtur
           VERSION_CODE=$(grep VERSION_CODE clients/android/version.properties | cut -d= -f2)
           VERSION_NAME=$(grep VERSION_NAME clients/android/version.properties | cut -d= -f2)
           
@@ -216,7 +244,7 @@ jobs:
           }
           EOF
           
-          # APK'yı yeniden adlandır
+          # APK'yÄ± yeniden adlandÄ±r
           cd dist
           mv *.apk "sing-box-${{ matrix.config.version }}-android-arm64.apk"
           
@@ -263,13 +291,13 @@ jobs:
           # Build date
           BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           
-          # Changelog oluştur
+          # Changelog oluÅŸtur
           cat > changelog.md << 'EOF'
-          ## 🎯 Development Build #${{ github.run_number }}
+          ## ğŸ¯ Development Build #${{ github.run_number }}
           
           Custom slim build of sing-box for Android.
           
-          ### 📦 Downloads
+          ### ğŸ“¦ Downloads
           
           | Platform | Architecture | File |
           |----------|--------------|------|
@@ -279,53 +307,53 @@ jobs:
           
           ---
           
-          ## 🔧 Slim Build Features
+          ## ğŸ”§ Slim Build Features
           
-          ### ✅ Included
+          ### âœ… Included
           - **Protocols**: VLESS (Reality), VMess, Trojan, Shadowsocks, Hysteria2
           - **Special**: NaiveProxy support
           - **Performance**: GVISOR, QUIC, uTLS, Clash API
           
-          ### ❌ Removed (to reduce size)
+          ### âŒ Removed (to reduce size)
           - Tor, SSH, ShadowTLS, AnyTLS
           - TUIC, Hysteria v1
           - WireGuard, Tailscale
           
           ---
           
-          ## 📊 Build Information
+          ## ğŸ“Š Build Information
           
           | Item | Value |
           |------|-------|
           | **Build Date** | ${BUILD_DATE} |
           | **Build Number** | #${{ github.run_number }} |
           | **Android NDK** | r28 |
-          | **Go Version** | 1.25.5 |
+          | **Go Version** | 1.23 |
           | **Min Android API** | 23 (Android 6.0+) |
           
           ---
           
-          ## 🚀 Installation
+          ## ğŸš€ Installation
           
           1. Download the APK file above
           2. Enable "Install from Unknown Sources" in Android settings
           3. Install the APK
           4. Grant necessary permissions
           
-          ## ⚠️ Notes
+          ## âš ï¸ Notes
           
           - **ARM64 only** - will not work on 32-bit devices
           - This is a custom slim build optimized for size and performance
           
           ---
           
-          <sub>🤖 Auto-generated by [slim-build workflow](../../actions) on ${BUILD_DATE}</sub>
+          <sub>ğŸ¤– Auto-generated by [slim-build workflow](../../actions) on ${BUILD_DATE}</sub>
           EOF
           
-          # Değişkenleri değiştir
+          # DeÄŸiÅŸkenleri deÄŸiÅŸtir
           sed -i "s/\${BUILD_DATE}/${BUILD_DATE}/g" changelog.md
           
-          # Output için encode et
+          # Output iÃ§in encode et
           {
             echo "changelog<<EOFMARKER"
             cat changelog.md
@@ -336,7 +364,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ matrix.config.version }}
-          name: "${{ matrix.config.version }} - Slim Build 🚀"
+          name: "${{ matrix.config.version }} - Slim Build ğŸš€"
           body: ${{ steps.changelog.outputs.changelog }}
           draft: false
           prerelease: ${{ matrix.config.prerelease }}
@@ -344,4 +372,3 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          

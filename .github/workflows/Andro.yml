@@ -3,24 +3,11 @@ name: Build Android (?)
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Specific version (e.g., 1.13.0-beta.4). Leave empty for auto-increment."
-        required: false
-        type: string
-      mode:
-        description: "Build Mode (Ignore if Version set)"
-        required: true
-        default: "beta"
-        type: choice
-        options:
-          - beta
-          - stable
-          - all
       upstream_branch:
-        description: "Upstream branch to use (leave empty to use tag from version/mode)"
-        required: false
+        description: "Upstream branch/tag to build from"
+        required: true
         type: string
-        default: ""
+        default: "main"
       android_client_branch:
         description: "Android client branch (dev or test)"
         required: false
@@ -53,171 +40,25 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Initialize lists
-          VERSIONS_JSON="[]"
+          # GitHub Actions run number kullan (her workflow çalıştığında 1 artar)
+          # İlk çalıştırma: 1, ikinci: 2, üçüncü: 3...
+          RUN_NUM=${{ github.run_number }}
           
-          add_version() {
-            local v=$1
-            local t=$2
-            local p=$3
-            # Use jq to append object to array
-            VERSIONS_JSON=$(echo "$VERSIONS_JSON" | jq --arg v "$v" --arg t "$t" --argjson p "$p" \
-              '. + [{"version": $v, "tag": $t, "prerelease": $p}]')
-          }
+          # Versiyon oluştur: dev-v1.0, dev-v1.1, dev-v1.2...
+          NEW_VERSION="dev-v1.${RUN_NUM}"
           
-          # Versiyon stringinden tüm -slim ve ekstra sayıları temizle
-          clean_version() {
-            local ver=$1
-            # 1. 'v' prefixi kaldır
-            ver=$(echo "$ver" | sed 's/^v//')
-            # 2. Tüm '-slim' kısımlarını kaldır
-            ver=$(echo "$ver" | sed 's/-slim//g')
-            # 3. Sadece geçerli version formatını tut (X.Y.Z veya X.Y.Z-rc.N formatı)
-            # Ekstra .1.1.1 gibi kısımları temizle
-            if echo "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-[a-z]+\.[0-9]+'; then
-              # Prerelease format: 1.13.0-rc.2
-              ver=$(echo "$ver" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+-[a-z]+\.[0-9]+')
-            elif echo "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
-              # Stable format: 1.13.0
-              ver=$(echo "$ver" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
-            fi
-            echo "$ver"
-          }
+          echo "Generated version: $NEW_VERSION (based on run #${RUN_NUM})"
           
-          increment_version() {
-            local version=$1
-            local is_prerelease=$2
-            
-            echo "DEBUG: increment_version called with: version=$version, is_prerelease=$is_prerelease" >&2
-            
-            if [ "$is_prerelease" = true ]; then
-              # Beta/RC versiyonları için son sayıyı artır
-              # Örnek: 1.13.0-rc.2 -> 1.13.0-rc.3
-              if echo "$version" | grep -qE '\.[0-9]+$'; then
-                local base=$(echo "$version" | sed -E 's/\.[0-9]+$//')
-                local last_num=$(echo "$version" | grep -oE '[0-9]+$')
-                local new_num=$((last_num + 1))
-                echo "${base}.${new_num}"
-              else
-                # Eğer son karakter sayı değilse .1 ekle
-                echo "${version}.1"
-              fi
-            else
-              # Stable versiyonlar: 1.13.0 -> 1.13.1
-              # Son rakamı artır
-              if echo "$version" | grep -qE '\.[0-9]+$'; then
-                local base=$(echo "$version" | sed -E 's/\.[0-9]+$//')
-                local last_num=$(echo "$version" | grep -oE '[0-9]+$')
-                local new_num=$((last_num + 1))
-                echo "${base}.${new_num}"
-              else
-                # Rakam yoksa .1 ekle
-                echo "${version}.1"
-              fi
-            fi
-          }
-
-          if [ -n "${{ inputs.version }}" ]; then
-             # Manuel Version
-             VER="${{ inputs.version }}"
-             TAG="v${VER}"
-             # Guess prerelease based on hyphen
-             if [[ "$VER" == *"-"* ]]; then PRE=true; else PRE=false; fi
-             add_version "$VER" "$TAG" "$PRE"
-             echo "Mode: Manual ($VER)"
-          else
-             # Fetch from Upstream
-             echo "Fetching releases from TheYusa/sing-box..."
-             RELEASES_JSON=$(curl -s "https://api.github.com/repos/TheYusa/sing-box/releases")
-             
-             LATEST_BETA=$(echo "$RELEASES_JSON" | jq -r '[.[] | select(.prerelease == true)] | .[0] | .tag_name')
-             LATEST_STABLE=$(echo "$RELEASES_JSON" | jq -r '[.[] | select(.prerelease == false)] | .[0] | .tag_name')
-             
-             MODE="${{ inputs.mode }}"
-             
-             if [[ "$MODE" == "beta" || "$MODE" == "all" ]]; then
-                if [ -n "$LATEST_BETA" ] && [ "$LATEST_BETA" != "null" ]; then
-                  # Upstream versiyonunu temizle
-                  UPSTREAM_VER=$(clean_version "$LATEST_BETA")
-                  
-                  echo "DEBUG: Upstream beta tag: $LATEST_BETA" >&2
-                  echo "DEBUG: Upstream beta version (cleaned): $UPSTREAM_VER" >&2
-                  
-                  # Son slim release'imizi kontrol et
-                  OUR_RELEASES=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases")
-                  LAST_SLIM_BETA=$(echo "$OUR_RELEASES" | jq -r '[.[] | select(.prerelease == true and (.tag_name | contains("-slim")))] | .[0] | .tag_name')
-                  
-                  echo "DEBUG: Last slim beta release tag: $LAST_SLIM_BETA" >&2
-                  
-                  if [ -n "$LAST_SLIM_BETA" ] && [ "$LAST_SLIM_BETA" != "null" ]; then
-                    # Son versiyonumuzu temizle
-                    LAST_VER=$(clean_version "$LAST_SLIM_BETA")
-                    echo "DEBUG: Last version (cleaned): $LAST_VER" >&2
-                    
-                    # Upstream versiyonla karşılaştır
-                    if [ "$LAST_VER" = "$UPSTREAM_VER" ]; then
-                      # Aynı upstream versiyondan bir önceki slim varsa, sadece son rakamı artır
-                      VER=$(increment_version "$LAST_VER" true)
-                      echo "Auto-increment Beta (same upstream): $LAST_VER -> $VER"
-                    else
-                      # Upstream değişmişse, yeni upstream versiyonunu kullan
-                      VER="$UPSTREAM_VER"
-                      echo "New upstream Beta version: $VER"
-                    fi
-                  else
-                    # Hiç slim release yoksa upstream'i kullan
-                    VER="$UPSTREAM_VER"
-                    echo "First Beta Release: $VER"
-                  fi
-                  
-                  add_version "$VER" "$LATEST_BETA" true
-                fi
-             fi
-             
-             if [[ "$MODE" == "stable" || "$MODE" == "all" ]]; then
-                if [ -n "$LATEST_STABLE" ] && [ "$LATEST_STABLE" != "null" ]; then
-                  # Upstream versiyonunu temizle
-                  UPSTREAM_VER=$(clean_version "$LATEST_STABLE")
-                  
-                  echo "DEBUG: Upstream stable tag: $LATEST_STABLE" >&2
-                  echo "DEBUG: Upstream stable version (cleaned): $UPSTREAM_VER" >&2
-                  
-                  # Son slim stable release'imizi kontrol et
-                  OUR_RELEASES=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases")
-                  LAST_SLIM_STABLE=$(echo "$OUR_RELEASES" | jq -r '[.[] | select(.prerelease == false and (.tag_name | contains("-slim")))] | .[0] | .tag_name')
-                  
-                  echo "DEBUG: Last slim stable release tag: $LAST_SLIM_STABLE" >&2
-                  
-                  if [ -n "$LAST_SLIM_STABLE" ] && [ "$LAST_SLIM_STABLE" != "null" ]; then
-                    # Son versiyonumuzu temizle
-                    LAST_VER=$(clean_version "$LAST_SLIM_STABLE")
-                    echo "DEBUG: Last version (cleaned): $LAST_VER" >&2
-                    
-                    # Upstream versiyonla karşılaştır
-                    if [ "$LAST_VER" = "$UPSTREAM_VER" ]; then
-                      # Aynı upstream versiyondan bir önceki slim varsa, sadece son rakamı artır
-                      VER=$(increment_version "$LAST_VER" false)
-                      echo "Auto-increment Stable (same upstream): $LAST_VER -> $VER"
-                    else
-                      # Upstream değişmişse, yeni upstream versiyonunu kullan
-                      VER="$UPSTREAM_VER"
-                      echo "New upstream Stable version: $VER"
-                    fi
-                  else
-                    # Hiç slim release yoksa upstream'i kullan
-                    VER="$UPSTREAM_VER"
-                    echo "First Stable Release: $VER"
-                  fi
-                  
-                  add_version "$VER" "$LATEST_STABLE" false
-                fi
-             fi
-          fi
+          # JSON oluştur
+          VERSIONS_JSON=$(jq -n \
+            --arg v "$NEW_VERSION" \
+            --arg t "${{ inputs.upstream_branch }}" \
+            '[{"version": $v, "tag": $t, "prerelease": true}]')
           
           echo "Generated Matrix:"
           echo "$VERSIONS_JSON" | jq .
           
-          # Set output (compress json to one line)
+          # Set output
           echo "matrix=$(echo "$VERSIONS_JSON" | jq -c .)" >> "$GITHUB_OUTPUT"
 
   # ============================================================================
@@ -240,7 +81,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: TheYusa/sing-box
-          ref: ${{ inputs.upstream_branch != '' && inputs.upstream_branch || matrix.config.tag }}
+          ref: ${{ matrix.config.tag }}
           fetch-depth: 0
           path: sing-box
 
@@ -399,13 +240,12 @@ jobs:
           EOF
           
           cd dist
-          mv *.apk "sing-box-${{ matrix.config.version }}-android-arm64-slim.apk"
+          mv *.apk "sing-box-${{ matrix.config.version }}-android-arm64.apk"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          # Unique name for each matrix version
-          name: android-arm64-slim-${{ matrix.config.version }}
+          name: android-arm64-${{ matrix.config.version }}
           path: dist
           retention-days: 1
 
@@ -413,7 +253,7 @@ jobs:
   # CREATE RELEASES
   # ============================================================================
   release:
-    name: Release v${{ matrix.config.version }}-slim
+    name: Release ${{ matrix.config.version }}
     runs-on: ubuntu-latest
     needs: [strategy_matrix, build_android]
     strategy:
@@ -425,76 +265,51 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: "*-slim-${{ matrix.config.version }}"
+          pattern: "android-arm64-${{ matrix.config.version }}"
           merge-multiple: true
 
       - name: Prepare Release Files
         run: |
           mkdir -p release_files
-          # Move files matching current version to release dir
-          find artifacts -type f -name "*${{ matrix.config.version }}*" -exec cp {} release_files/ \;
-          # Also copy the metadata json
-          find artifacts -type f -name "SFA-version-metadata.json" -exec cp {} release_files/ \;
+          find artifacts -type f -exec cp {} release_files/ \;
           ls -la release_files/
 
       - name: Generate Changelog
         id: changelog
         run: |
-          # Upstream değişikliklerini çek
-          UPSTREAM_TAG="${{ matrix.config.tag }}"
-          UPSTREAM_URL="https://github.com/TheYusa/sing-box/releases/tag/${UPSTREAM_TAG}"
-          
-          # Upstream changelog'u fetch et (escape işlemi yapmadan sadece al)
-          UPSTREAM_CHANGELOG=$(curl -s "https://api.github.com/repos/TheYusa/sing-box/releases/tags/${UPSTREAM_TAG}" | jq -r '.body // "No changelog available from upstream"')
-          
-          # Kendi önceki release'imizi bul
-          PREV_RELEASE=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases" | \
-            jq -r --arg current "v${{ matrix.config.version }}-slim" \
-            '[.[] | select(.tag_name != $current and (.tag_name | contains("slim")))] | .[0] | .tag_name // "none"')
-          
           # Build date
           BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           
-          # Changelog oluştur (heredoc ile, sed yerine direkt değişken kullan)
-          cat > changelog.md << EOF
-          ## 🎯 What's New
+          # Upstream tag/branch
+          UPSTREAM_REF="${{ matrix.config.tag }}"
           
-          This is a **Slim Build** based on [sing-box ${{ matrix.config.tag }}](${UPSTREAM_URL}).
+          # Changelog oluştur
+          cat > changelog.md << EOF
+          ## 🎯 Development Build #${{ github.run_number }}
+          
+          This is a **custom slim build** based on TheYusa/sing-box @ \`${UPSTREAM_REF}\`.
           
           ### 📦 Downloads
           
           | Platform | Architecture | File |
           |----------|--------------|------|
-          | Android | ARM64 | [\`sing-box-${{ matrix.config.version }}-android-arm64-slim.apk\`](../../releases/download/v${{ matrix.config.version }}-slim/sing-box-${{ matrix.config.version }}-android-arm64-slim.apk) |
+          | Android | ARM64 | [\`sing-box-${{ matrix.config.version }}-android-arm64.apk\`](../../releases/download/${{ matrix.config.version }}/sing-box-${{ matrix.config.version }}-android-arm64.apk) |
           
-          **Metadata**: [\`SFA-version-metadata.json\`](../../releases/download/v${{ matrix.config.version }}-slim/SFA-version-metadata.json)
+          **Metadata**: [\`SFA-version-metadata.json\`](../../releases/download/${{ matrix.config.version }}/SFA-version-metadata.json)
           
           ---
           
-          ## 🔧 Slim Build Modifications
+          ## 🔧 Slim Build Features
           
-          ### ✅ Included Features
+          ### ✅ Included
           - **Protocols**: VLESS (Reality), VMess, Trojan, Shadowsocks, Hysteria2
           - **Special**: NaiveProxy support
           - **Performance**: GVISOR, QUIC, uTLS, Clash API
-          - **Network**: Connection tracking enabled
           
-          ### ❌ Removed Features
-          To reduce APK size and improve performance:
+          ### ❌ Removed
           - Tor, SSH, ShadowTLS, AnyTLS
           - TUIC, Hysteria v1
           - WireGuard, Tailscale
-          
-          ---
-          
-          ## 📋 Upstream Changelog
-          
-          <details>
-          <summary>View full upstream changelog from TheYusa/sing-box</summary>
-          
-          ${UPSTREAM_CHANGELOG}
-          
-          </details>
           
           ---
           
@@ -503,8 +318,8 @@ jobs:
           | Item | Value |
           |------|-------|
           | **Build Date** | ${BUILD_DATE} |
-          | **Upstream Version** | [${{ matrix.config.tag }}](${UPSTREAM_URL}) |
-          | **Previous Release** | ${PREV_RELEASE} |
+          | **Build Number** | #${{ github.run_number }} |
+          | **Upstream Ref** | ${UPSTREAM_REF} |
           | **Android NDK** | r28 |
           | **Go Version** | 1.25.5 |
           | **Min Android API** | 23 (Android 6.0+) |
@@ -520,9 +335,8 @@ jobs:
           
           ## ⚠️ Notes
           
-          - This is an **unofficial slim build** optimized for size and common use cases
           - ARM64 only - will not work on 32-bit devices
-          - Based on [TheYusa/sing-box](https://github.com/TheYusa/sing-box) fork
+          - Based on [TheYusa/sing-box](https://github.com/TheYusa/sing-box)
           
           ---
           
@@ -539,12 +353,12 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ matrix.config.version }}-slim
-          name: "sing-box v${{ matrix.config.version }} - Slim Build 🚀"
+          tag_name: ${{ matrix.config.version }}
+          name: "${{ matrix.config.version }} - Slim Build 🚀"
           body: ${{ steps.changelog.outputs.changelog }}
           draft: false
           prerelease: ${{ matrix.config.prerelease }}
           files: release_files/*
-          make_latest: ${{ matrix.config.prerelease == false }}
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
